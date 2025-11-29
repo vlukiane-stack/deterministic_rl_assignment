@@ -1,0 +1,442 @@
+"""
+Deterministic Reinforcement Learning Assignment
+
+Implements:
+  - Value Iteration
+  - Policy Iteration
+  - Q-Learning
+
+on the deterministic gridworld described in the assignment.
+
+States:
+  (x, y) with x in {0,1,2}, y in {0,1,2,3}
+
+Terminal states:
+  (1, 1): reward -10
+  (2, 1): reward -20
+  (1, 2): reward 10
+  (2, 3): reward 20
+
+Non-terminal states have reward 0.
+
+Actions:
+  U (up), D (down), L (left), R (right)
+Deterministic transitions. If an action would leave the grid,
+the agent stays in the same state.
+
+For each γ in {0.9, 0.5, 0.1} we:
+  - run value iteration, print V(s), policy, and iteration count
+  - run policy iteration, print V(s), policy, and iteration count
+  - run Q-learning, print Q-values summary, V(s), and policy
+  - print a compact comparison table row
+"""
+
+import random
+from typing import Dict, Tuple, List
+
+# ----- Environment definition -----
+
+WIDTH, HEIGHT = 3, 4
+
+# All states (x, y)
+STATES = [(x, y) for y in range(HEIGHT) for x in range(WIDTH)]
+
+# Terminal states and rewards
+TERMINAL_STATES = {(1, 1), (1, 2), (2, 1), (2, 3)}
+
+REWARDS: Dict[Tuple[int, int], float] = {
+    (1, 1): -10.0,
+    (2, 1): -20.0,
+    (1, 2): 10.0,
+    (2, 3): 20.0,
+    (0, 0): 0.0,
+    (1, 0): 0.0,
+    (2, 0): 0.0,
+    (0, 1): 0.0,
+    (0, 2): 0.0,
+    (0, 3): 0.0,
+    (1, 3): 0.0,
+    (2, 2): 0.0,
+}
+
+ACTIONS = ["U", "D", "L", "R"]
+ARROWS = {"U": "↑", "D": "↓", "L": "←", "R": "→"}
+
+
+def is_terminal(s: Tuple[int, int]) -> bool:
+    """Check if a state is terminal."""
+    return s in TERMINAL_STATES
+
+
+def step(s: Tuple[int, int], a: str) -> Tuple[Tuple[int, int], float]:
+    """
+    Deterministic transition function.
+
+    If the agent attempts to move outside the grid, it stays in place.
+    Reward is the reward of the next state (arrival reward).
+    For terminal states, we treat them as absorbing with zero
+    additional reward (only their own state reward).
+    """
+    if is_terminal(s):
+        # Absorbing: no further reward beyond the terminal state's reward,
+        # which is baked into V(s) separately.
+        return s, 0.0
+
+    x, y = s
+    if a == "U":
+        nx, ny = x, min(y + 1, HEIGHT - 1)
+    elif a == "D":
+        nx, ny = x, max(y - 1, 0)
+    elif a == "L":
+        nx, ny = max(x - 1, 0), y
+    elif a == "R":
+        nx, ny = min(x + 1, WIDTH - 1), y
+    else:
+        raise ValueError(f"Unknown action: {a}")
+
+    ns = (nx, ny)
+    r = REWARDS.get(ns, 0.0)
+    return ns, r
+
+
+# ----- Value Iteration -----
+
+def value_iteration(
+    gamma: float,
+    theta: float = 1e-6,
+    max_iters: int = 10_000,
+) -> Tuple[Dict[Tuple[int, int], float],
+           Dict[Tuple[int, int], str],
+           int]:
+    """
+    Classical value iteration.
+
+    V(s) initialized to 0 for all states, terminal states are fixed to their rewards.
+    Bellman optimality update:
+      V(s) ← max_a [ r(s,a,s') + γ V(s') ]
+    """
+    V = {s: 0.0 for s in STATES}
+    for s in TERMINAL_STATES:
+        V[s] = REWARDS[s]
+
+    it = 0
+    while True:
+        delta = 0.0
+        it += 1
+        for s in STATES:
+            if is_terminal(s):
+                # Keep terminal values fixed
+                continue
+            v_old = V[s]
+            best = float("-inf")
+            for a in ACTIONS:
+                ns, r = step(s, a)
+                val = r + gamma * V[ns]
+                if val > best:
+                    best = val
+            V[s] = best
+            delta = max(delta, abs(v_old - V[s]))
+
+        if delta < theta or it >= max_iters:
+            break
+
+    # Extract greedy policy from V
+    pi: Dict[Tuple[int, int], str] = {}
+    for s in STATES:
+        if is_terminal(s):
+            pi[s] = "T"
+            continue
+        best_val = float("-inf")
+        best_a = None
+        for a in ACTIONS:
+            ns, r = step(s, a)
+            val = r + gamma * V[ns]
+            if val > best_val:
+                best_val = val
+                best_a = a
+        pi[s] = best_a
+
+    return V, pi, it
+
+
+# ----- Policy Iteration -----
+
+def policy_evaluation(
+    pi: Dict[Tuple[int, int], str],
+    gamma: float,
+    theta: float = 1e-6,
+    max_iters: int = 10_000,
+) -> Dict[Tuple[int, int], float]:
+    """
+    Policy evaluation for a deterministic policy pi(s).
+
+    Update:
+      V(s) ← r(s, pi(s), s') + γ V(s')
+    until convergence.
+    """
+    V = {s: 0.0 for s in STATES}
+    for s in TERMINAL_STATES:
+        V[s] = REWARDS[s]
+
+    for _ in range(max_iters):
+        delta = 0.0
+        for s in STATES:
+            if is_terminal(s):
+                continue
+            v_old = V[s]
+            a = pi[s]
+            ns, r = step(s, a)
+            V[s] = r + gamma * V[ns]
+            delta = max(delta, abs(v_old - V[s]))
+        if delta < theta:
+            break
+
+    return V
+
+
+def policy_iteration(
+    gamma: float,
+    theta: float = 1e-6,
+    max_iters: int = 1_000,
+) -> Tuple[Dict[Tuple[int, int], float],
+           Dict[Tuple[int, int], str],
+           int]:
+    """
+    Classical policy iteration:
+
+    1. Initialize a (random) policy.
+    2. Policy evaluation.
+    3. Policy improvement.
+    4. Repeat until policy is stable.
+    """
+    pi: Dict[Tuple[int, int], str] = {}
+    for s in STATES:
+        if is_terminal(s):
+            pi[s] = "T"
+        else:
+            pi[s] = random.choice(ACTIONS)
+
+    is_stable = False
+    it = 0
+    while not is_stable and it < max_iters:
+        it += 1
+        V = policy_evaluation(pi, gamma, theta)
+        is_stable = True
+
+        for s in STATES:
+            if is_terminal(s):
+                continue
+            old_a = pi[s]
+            # Greedy improvement
+            best_val = float("-inf")
+            best_a = None
+            for a in ACTIONS:
+                ns, r = step(s, a)
+                val = r + gamma * V[ns]
+                if val > best_val:
+                    best_val = val
+                    best_a = a
+            pi[s] = best_a
+            if best_a != old_a:
+                is_stable = False
+
+    return V, pi, it
+
+
+# ----- Q-Learning -----
+
+def q_learning(
+    gamma: float,
+    alpha: float = 0.1,
+    epsilon: float = 0.1,
+    episodes: int = 10_000,
+    max_steps: int = 100,
+) -> Tuple[Dict[Tuple[Tuple[int, int], str], float],
+           Dict[Tuple[int, int], float],
+           Dict[Tuple[int, int], str]]:
+    """
+    Tabular Q-learning for the deterministic gridworld.
+
+    Update rule:
+      Q(s,a) ← Q(s,a) + α [ r + γ max_a' Q(s',a') − Q(s,a) ]
+    """
+    Q: Dict[Tuple[Tuple[int, int], str], float] = {
+        (s, a): 0.0 for s in STATES for a in ACTIONS
+    }
+
+    # For terminal states, it's convenient to set all Q(s, a) = reward(s)
+    for s in TERMINAL_STATES:
+        for a in ACTIONS:
+            Q[(s, a)] = REWARDS[s]
+
+    non_terminal_states = [s for s in STATES if not is_terminal(s)]
+
+    for _ in range(episodes):
+        # Start from a random non-terminal state
+        s = random.choice(non_terminal_states)
+
+        for _ in range(max_steps):
+            # ε-greedy action selection
+            if random.random() < epsilon:
+                a = random.choice(ACTIONS)
+            else:
+                # Greedy w.r.t Q
+                qs = [Q[(s, act)] for act in ACTIONS]
+                max_q = max(qs)
+                best_as = [act for act in ACTIONS if Q[(s, act)] == max_q]
+                a = random.choice(best_as)
+
+            ns, r = step(s, a)
+
+            # Q update
+            max_next = max(Q[(ns, ap)] for ap in ACTIONS)
+            Q[(s, a)] += alpha * (r + gamma * max_next - Q[(s, a)])
+
+            s = ns
+            if is_terminal(s):
+                break
+
+    # Derive V and policy from Q
+    V: Dict[Tuple[int, int], float] = {}
+    pi: Dict[Tuple[int, int], str] = {}
+    for s in STATES:
+        if is_terminal(s):
+            V[s] = REWARDS[s]
+            pi[s] = "T"
+        else:
+            best_a = max(ACTIONS, key=lambda a: Q[(s, a)])
+            V[s] = Q[(s, best_a)]
+            pi[s] = best_a
+
+    return Q, V, pi
+
+
+# ----- Pretty-print helpers -----
+
+def print_value_grid(V: Dict[Tuple[int, int], float]) -> None:
+    """Print V(s) as a 4x3 grid (y from top to bottom)."""
+    for y in reversed(range(HEIGHT)):
+        row = []
+        for x in range(WIDTH):
+            s = (x, y)
+            row.append(f"{V[s]:7.2f}")
+        print(" ".join(row))
+    print()
+
+
+def print_policy_grid(pi: Dict[Tuple[int, int], str]) -> None:
+    """Print policy as arrows/T in a 4x3 grid."""
+    for y in reversed(range(HEIGHT)):
+        row = []
+        for x in range(WIDTH):
+            s = (x, y)
+            a = pi[s]
+            if a == "T":
+                row.append("  T  ")
+            else:
+                row.append(f"  {ARROWS[a]}  ")
+        print(" ".join(row))
+    print()
+
+
+def print_q_summary(Q: Dict[Tuple[Tuple[int, int], str], float]) -> None:
+    """
+    Print Q-values per state in a compact form:
+      (x,y): U=.. D=.. L=.. R=..
+    """
+    for y in reversed(range(HEIGHT)):
+        for x in range(WIDTH):
+            s = (x, y)
+            vals = ", ".join(
+                f"{a}={Q[(s, a)]:6.2f}" for a in ACTIONS
+            )
+            print(f"State {s}: {vals}")
+        print()
+    print()
+
+
+# ----- Main experiment -----
+
+def run_all():
+    gammas = [0.9, 0.5, 0.1]
+
+    # For a compact comparison table like the suggested format,
+    # we’ll record V at start state (0,0) and goal (2,3).
+    start_state = (0, 0)
+    goal_state = (2, 3)
+
+    print("DETERMINISTIC RL GRIDWORLD EXPERIMENT\n")
+
+    summary_rows: List[Tuple[str, float, int, float, float, str]] = []
+
+    for gamma in gammas:
+        print("=" * 40)
+        print(f"γ = {gamma}")
+        print("=" * 40)
+
+        # ----- Value Iteration -----
+        V_vi, pi_vi, it_vi = value_iteration(gamma)
+        print("\n[Value Iteration]")
+        print(f"Converged in {it_vi} iterations.")
+        print("Value function V(s):")
+        print_value_grid(V_vi)
+        print("Optimal policy π(s):")
+        print_policy_grid(pi_vi)
+
+        # ----- Policy Iteration -----
+        V_pi, pi_pi, it_pi = policy_iteration(gamma)
+        print("\n[Policy Iteration]")
+        print(f"Converged in {it_pi} policy improvement steps.")
+        print("Value function V(s):")
+        print_value_grid(V_pi)
+        print("Optimal policy π(s):")
+        print_policy_grid(pi_pi)
+
+        # ----- Q-Learning -----
+        print("\n[Q-Learning]")
+        Q_ql, V_ql, pi_ql = q_learning(gamma)
+        print("Final Q(s,a) values (summary):")
+        print_q_summary(Q_ql)
+        print("Derived value function V(s) from Q:")
+        print_value_grid(V_ql)
+        print("Derived optimal policy π(s) from Q:")
+        print_policy_grid(pi_ql)
+
+        # Add rows to summary table
+        summary_rows.append((
+            "Value Iteration",
+            gamma,
+            it_vi,
+            V_vi[start_state],
+            V_vi[goal_state],
+            "dynamic programming"
+        ))
+        summary_rows.append((
+            "Policy Iteration",
+            gamma,
+            it_pi,
+            V_pi[start_state],
+            V_pi[goal_state],
+            "policy eval + improvement"
+        ))
+        summary_rows.append((
+            "Q-Learning",
+            gamma,
+            -1,  # not a simple 'iteration' count; uses episodes
+            V_ql[start_state],
+            V_ql[goal_state],
+            "model-free TD"
+        ))
+
+    # ----- Print compact comparison table -----
+    print("\n================ COMPARISON TABLE ================\n")
+    header = f"{'Algorithm':16s} {'γ':5s} {'Iter':>6s} {'V(0,0)':>10s} {'V(2,3)':>10s} Notes"
+    print(header)
+    print("-" * len(header))
+    for alg, gamma, iters, v_start, v_goal, note in summary_rows:
+        it_str = f"{iters}" if iters >= 0 else "-"
+        print(f"{alg:16s} {gamma:5.2f} {it_str:>6s} {v_start:10.2f} {v_goal:10.2f} {note}")
+
+
+if __name__ == "__main__":
+    run_all()
